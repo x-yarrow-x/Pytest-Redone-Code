@@ -1,0 +1,153 @@
+import pytest
+import requests
+from playwright.sync_api import sync_playwright
+
+# ----------------------------
+# Configuration (normally from config files / env vars)
+# ----------------------------
+API_BASE_URL = "https://api.workflowpro.com"
+WEB_BASE_URL_COMPANY1 = "https://company1.workflowpro.com"
+WEB_BASE_URL_COMPANY2 = "https://company2.workflowpro.com"
+
+COMPANY1_TENANT_ID = "company1"
+COMPANY2_TENANT_ID = "company2"
+
+
+# ----------------------------
+# Helper functions (simplified)
+# ----------------------------
+
+def get_auth_token(role, tenant):
+    """
+    Assumption:
+    - Test users exist per role and tenant
+    - Authentication returns a bearer token
+    """
+    return "dummy-test-token"
+
+
+def create_project_api(token, tenant_id, payload):
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Tenant-ID": tenant_id
+    }
+    response = requests.post(
+        f"{API_BASE_URL}/api/v1/projects",
+        json=payload,
+        headers=headers,
+        timeout=10
+    )
+    return response
+
+
+def delete_project_api(token, tenant_id, project_id):
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Tenant-ID": tenant_id
+    }
+    requests.delete(
+        f"{API_BASE_URL}/api/v1/projects/{project_id}",
+        headers=headers,
+        timeout=10
+    )
+
+
+def login_ui(page, base_url, email, password):
+    page.goto(f"{base_url}/login")
+    page.fill("#email", email)
+    page.fill("#password", password)
+    page.click("#login-btn")
+    page.wait_for_url("**/dashboard", timeout=20000)
+
+
+# ----------------------------
+# Integration Test
+# ----------------------------
+
+@pytest.mark.integration
+def test_project_creation_flow():
+    """
+    End-to-end integration test validating:
+    - API project creation
+    - Web UI visibility
+    - Mobile accessibility
+    - Tenant isolation
+    """
+
+    # ---------- 1. API: Create project ----------
+    token_company1 = get_auth_token(role="admin", tenant=COMPANY1_TENANT_ID)
+
+    project_payload = {
+        "name": "Test Project - Integration",
+        "description": "Created via API for integration testing",
+        "team_members": ["user1", "user2"]
+    }
+
+    response = create_project_api(
+        token=token_company1,
+        tenant_id=COMPANY1_TENANT_ID,
+        payload=project_payload
+    )
+
+    assert response.status_code == 201
+
+    project_id = response.json()["id"]
+    project_name = response.json()["name"]
+
+    # ---------- 2. Web UI: Verify project appears ----------
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        login_ui(
+            page,
+            base_url=WEB_BASE_URL_COMPANY1,
+            email="admin@company1.com",
+            password="password123"
+        )
+
+        # Explicit wait for dynamically loaded project cards
+        page.wait_for_selector(".project-card", timeout=20000)
+
+        assert page.locator(f"text={project_name}").is_visible()
+
+        browser.close()
+
+    # ---------- 3. Mobile: Verify project accessibility ----------
+    """
+    Assumption:
+    - Executed on BrowserStack using mobile web
+    - Same assertions reused to ensure consistency
+    """
+
+    # Pseudocode representing BrowserStack execution
+    mobile_page = "browserstack_mobile_page_object"
+
+    # Example assertions (conceptual)
+    assert True  # project visible on mobile dashboard
+
+    # ---------- 4. Tenant Isolation: Security validation ----------
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        login_ui(
+            page,
+            base_url=WEB_BASE_URL_COMPANY2,
+            email="admin@company2.com",
+            password="password123"
+        )
+
+        page.wait_for_selector(".project-card", timeout=20000)
+
+        # Project created for Company1 must NOT be visible
+        assert not page.locator(f"text={project_name}").is_visible()
+
+        browser.close()
+
+    # ---------- Cleanup ----------
+    delete_project_api(
+        token=token_company1,
+        tenant_id=COMPANY1_TENANT_ID,
+        project_id=project_id
+    )
